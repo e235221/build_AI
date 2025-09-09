@@ -1,0 +1,6 @@
+RAG/
+docs/
+emplate/
+__pycache__/
+*.pyc
+*.ipynb_checkpoints
