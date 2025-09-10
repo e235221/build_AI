@@ -1,142 +1,178 @@
 import os
 import gradio as gr
+from dotenv import load_dotenv
+
+# --- LlamaIndexとwatsonxのライブラリをインポート ---
 from llama_index.core import VectorStoreIndex, Settings
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.query_engine import RetrieverQueryEngine
 from llama_index.core.retrievers import QueryFusionRetriever
 from llama_index.readers.file import PyMuPDFReader
 from llama_index.retrievers.bm25 import BM25Retriever
-from llama_index.llms.ibm import WatsonxLLM
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from ibm_watsonx_ai.foundation_models import ModelInference
 from ibm_watsonx_ai.metanames import GenTextParamsMetaNames
 
-# --------------------------------------------------------------------------
-# 1. watsonx と Embedding モデルのセットアップ
-# --------------------------------------------------------------------------
-
-# watsonxのAPIキーとプロジェクトIDを設定します
-watsonx_api_key = "0i-_-6pigerNnnRaU8_oiybRZz_UxMQuBHpE_copxSdw"
-os.environ["WATSONX_APIKEY"] = watsonx_api_key
-
-watsonx_project_id = "b596c884-f867-4771-afcc-f9fd10dae1a4"
-os.environ["WATSONX_PROJECT_ID"] = watsonx_project_id
-
-# LLMの生成パラメータを定義します
-rag_gen_parameters = {
-    GenTextParamsMetaNames.DECODING_METHOD: "sample",
-    GenTextParamsMetaNames.MIN_NEW_TOKENS: 150,
-    GenTextParamsMetaNames.MAX_NEW_TOKENS: 512,
-    GenTextParamsMetaNames.TEMPERATURE: 0.5,
-    GenTextParamsMetaNames.TOP_K: 5,
-    GenTextParamsMetaNames.TOP_P: 0.7,
-}
-
-# watsonxのLLMを初期化します
-watsonx_llm = WatsonxLLM(
-    model_id="openai/gpt-oss-120b",  # モデルIDをopenai/gpt-oss-120bに変更
-    url="https://us-south.ml.cloud.ibm.com",
-    project_id=os.getenv("WATSONX_PROJECT_ID"),
-    params=rag_gen_parameters,
+# --- LlamaIndexのカスタムLLMを作成するために必要なクラスをインポート ---
+from llama_index.core.llms import (
+    CustomLLM,
+    CompletionResponse,
+    LLMMetadata,
+    ChatMessage,
+    MessageRole,
 )
 
-# 日本語に対応したEmbeddingモデルを設定します
+# --------------------------------------------------------------------------
+# 1. 動作確認済みのModelInferenceをラップするカスタムLLMクラスの定義
+# --------------------------------------------------------------------------
+
+class WatsonxCustomLLM(CustomLLM):
+    """
+    gpt4o.pyで動作確認が取れたModelInferenceクラスを
+    LlamaIndexで使えるようにするためのカスタムラッパークラス。
+    """
+    model_id: str = "openai/gpt-oss-120b"
+    _model: ModelInference = None
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        
+        # gpt4o.pyと同様にModelInferenceオブジェクトを初期化します
+        parameters = {
+            GenTextParamsMetaNames.DECODING_METHOD: "sample",
+            GenTextParamsMetaNames.MIN_NEW_TOKENS: 150,
+            GenTextParamsMetaNames.MAX_NEW_TOKENS: 1024,
+            GenTextParamsMetaNames.TEMPERATURE: 0.7,
+            GenTextParamsMetaNames.TOP_K: 50,
+            GenTextParamsMetaNames.TOP_P: 0.9,
+        }
+        
+        self._model = ModelInference(
+            model_id=self.model_id,
+            params=parameters,
+            credentials={
+                "apikey": os.getenv("WATSONX_APIKEY"),
+                "url": "https://us-south.ml.cloud.ibm.com"
+            },
+            project_id=os.getenv("WATSONX_PROJECT_ID")
+        )
+
+    @property
+    def metadata(self) -> LLMMetadata:
+        # LlamaIndexが必要とするメタデータを手動で設定します
+        return LLMMetadata(
+            context_window=8192,  # モデルのコンテキストウィンドウサイズ
+            num_output=1024,      # 最大出力トークン数
+            model_name=self.model_id,
+        )
+
+    def chat(self, messages: list[ChatMessage], **kwargs) -> CompletionResponse:
+        # LlamaIndexのメッセージ形式をwatsonxの形式に変換します
+        watsonx_messages = [{"role": msg.role.value, "content": msg.content} for msg in messages]
+            
+        # モデルを呼び出します
+        response = self._model.chat(messages=watsonx_messages)
+        
+        # 応答をLlamaIndexの形式に変換して返します
+        assistant_response = response["choices"][0]["message"]["content"]
+        return CompletionResponse(
+            text=assistant_response,  # 必須フィールド'text'を追加
+            message=ChatMessage(role=MessageRole.ASSISTANT, content=assistant_response)
+        )
+    
+    def complete(self, prompt: str, **kwargs) -> CompletionResponse:
+        # chatメソッドを呼び出す形で実装
+        return self.chat([ChatMessage(role=MessageRole.USER, content=prompt)])
+
+    # ストリーミングは未実装
+    def stream_chat(self, messages: list[ChatMessage], **kwargs):
+        raise NotImplementedError("Streaming not implemented")
+
+    def stream_complete(self, prompt: str, **kwargs):
+        raise NotImplementedError("Streaming not implemented")
+
+# --------------------------------------------------------------------------
+# 2. 環境設定とモデルの初期化
+# --------------------------------------------------------------------------
+
+# .envファイルから環境変数を読み込みます
+load_dotenv()
+
+# APIキーとプロジェクトIDの存在を確認します
+if not os.getenv("WATSONX_APIKEY") or not os.getenv("WATSONX_PROJECT_ID"):
+    raise ValueError("環境変数 WATSONX_APIKEY と WATSONX_PROJECT_ID を.envファイルに設定してください。")
+
+# --- LlamaIndex全体で使用するモデルを設定 ---
+# 作成したカスタムLLMクラスを初期化します
+llm = WatsonxCustomLLM()
+# 日本語のEmbeddingモデルを初期化します
 embed_model = HuggingFaceEmbedding(model_name="pkshatech/GLuCoSE-base-ja")
 
-# LlamaIndex全体で使用するLLMとEmbeddingモデルを設定します
-Settings.llm = watsonx_llm
+# LlamaIndexのグローバル設定に各モデルをセットします
+Settings.llm = llm
 Settings.embed_model = embed_model
 
-
 # --------------------------------------------------------------------------
-# 2. PDFドキュメントの読み込みとインデックスの構築
+# 3. PDFの読み込みからクエリエンジンの構築 (ここは変更なし)
 # --------------------------------------------------------------------------
 
-# PDFファイルを読み込みます
 loader = PyMuPDFReader()
-# PDFファイルへのパスを指定してください
 pdf_doc_ja = loader.load(file_path="./docs/housetomato.pdf") 
 
-# テキストを適切なサイズのチャンクに分割するスプリッターを定義します
 splitter = SentenceSplitter(chunk_size=512)
+index = VectorStoreIndex.from_documents(pdf_doc_ja, transformations=[splitter])
 
-# ドキュメントからベクトルインデックスを構築します
-index = VectorStoreIndex.from_documents(
-    pdf_doc_ja,
-    transformations=[splitter],
-)
-
-
-# --------------------------------------------------------------------------
-# 3. リトリーバーとクエリエンジンの構築
-# --------------------------------------------------------------------------
-
-# 2種類のリトリーバーを準備します (Vector + BM25)
 vector_retriever = index.as_retriever(similarity_top_k=2)
 bm25_retriever = BM25Retriever.from_defaults(docstore=index.docstore, similarity_top_k=2)
 
-# クエリを複数生成するためのプロンプトを定義します
 query_gen_prompt_str = (
-    "あなたは、1つの入力クエリに基づいて複数の検索クエリを生成する有能なアシスタントです。\n"
+    "あなたは、1つの入力クエリに基づいて複数の検索クエリを生成する有能なアシストです。\n"
     "{num_queries}個の検索クエリを、1行につき1つずつ生成してください。\n"
     "以下のクエリに関連する検索クエリを生成してください：\n\n"
     "クエリ: {query}\n"
     "検索クエリ:\n"
 )
 
-# 複数のリトリーバーを統合するQueryFusionRetrieverを構築します
 retriever = QueryFusionRetriever(
     [vector_retriever, bm25_retriever],
     similarity_top_k=4,
     num_queries=4,
     mode="reciprocal_rerank",
-    use_async=False,
-    verbose=False,
-    query_gen_prompt=query_gen_prompt_str,
 )
 
-# RAGの応答を生成するクエリエンジンを構築します
 query_engine = RetrieverQueryEngine(retriever)
 
-
 # --------------------------------------------------------------------------
-# 4. GradioによるチャットUIの構築と起動
+# 4. Gradio UIの構築と起動 (ここは変更なし)
 # --------------------------------------------------------------------------
 
-# Gradioのチャットボットが呼び出す関数を定義します
 def chat_function(message, history):
     try:
-        # query_engine.queryメソッドで応答を生成します
         response_obj = query_engine.query(message)
         result = response_obj.response
         
-        # 参照元の情報を応答に追加します
         source_nodes = response_obj.source_nodes
         if source_nodes:
             result += "\n\n--- ソース ---\n"
-            # 重複するソースを表示しないように管理します
             unique_sources = set()
             for node_with_score in source_nodes:
                 node = node_with_score.node
-                # メタデータからページ番号とファイル名を取得します
                 page_num = node.metadata.get('page_label', 'N/A')
                 file_name = node.metadata.get('file_name', 'N/A')
                 
                 source_id = f"{file_name}-p{page_num}"
                 if source_id not in unique_sources:
                     result += f"- ファイル: {file_name}, ページ: {page_num}\n"
-                    # 参照された内容の冒頭部分を表示します
                     content_preview = node.get_content()[:100].replace('\n', ' ')
                     result += f"  内容: {content_preview}...\n"
                     unique_sources.add(source_id)
-                    
         return result
     except Exception as e:
         return f"エラーが発生しました: {str(e)}"
 
-# Gradioのチャットインターフェースを作成します
 demo = gr.ChatInterface(
     fn=chat_function,
-    title="トマトマスター🍅",
+    title="gpt-oss-120b",
     description="PDFドキュメントに関する質問をしてください。",
     theme="soft",
     examples=[
@@ -145,7 +181,6 @@ demo = gr.ChatInterface(
     ]
 )
 
-# Gradioアプリを起動します
 if __name__ == "__main__":
     print("チャットボットを起動します。URLにアクセスしてください。")
     demo.launch()
