@@ -5,6 +5,7 @@
 # Useage
 
 ```
+mkdir docs/ # docsフォルダ内にpdfを保存
 pip install fqdn getpass4 greenlet isoduration jsonpointer jupyterlab llama-index-embeddings-huggingface llama-index-llms-ibm llama-index-readers-file llama-index-retrievers-bm25 PyMuPDF tinycss2 uri -template webcolors sentencepiece
 pip install ibm_watsonx_ai
 
