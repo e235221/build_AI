@@ -4,7 +4,7 @@ import nest_asyncio
 from typing import Tuple
 from dotenv import load_dotenv
 
-# --- 環境設定 ---------------------------------------------------------------
+#  環境設定 -
 # 注: APIキーやプロジェクトIDは .env から読み込む設計に変更する．
 load_dotenv(dotenv_path=".env", override=False)  # 既存の環境変数が優先される．
 WX_APIKEY = os.getenv("WATSONX_APIKEY") or os.getenv("WATSONX_API_KEY")
@@ -13,10 +13,10 @@ WX_URL = os.getenv("WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
 
 if not WX_APIKEY or not WX_PROJECT_ID:
     raise RuntimeError(
-        "`.env` に WATSONX_APIKEY と WATSONX_PROJECT_ID を記載してください（例: 下記サンプル）．または環境変数に設定してください．"
+        "`.env` に WATSONX_APIKEY と WATSONX_PROJECT_ID を記載してください。または環境変数に設定してください．"
     )
 
-# --- ライブラリ類 -----------------------------------------------------------
+#  ライブラリ類 
 # 研究目的の簡潔なコメント: LlamaIndex と watsonx.ai によるRAGクエリ比較のUIを提供する.
 from llama_index.llms.ibm import WatsonxLLM
 from ibm_watsonx_ai.metanames import GenTextParamsMetaNames
@@ -32,11 +32,11 @@ from llama_index.core.query_engine import RetrieverQueryEngine
 
 import gradio as gr
 
-# --- Notebook/REPL互換 ------------------------------------------------------
+#  Notebook/REPL互換 
 nest_asyncio.apply()
 _ = asyncio.get_event_loop()
 
-# --- 生成パラメータ ---------------------------------------------------------
+#  生成パラメータ 
 RAG_GEN_PARAMS = {
     GenTextParamsMetaNames.DECODING_METHOD: "sample",
     GenTextParamsMetaNames.MIN_NEW_TOKENS: 150,
@@ -45,7 +45,7 @@ RAG_GEN_PARAMS = {
     GenTextParamsMetaNames.TOP_P: 0.7,
 }
 
-# --- LLMの初期化（2モデル） ------------------------------------------------
+#  LLMの初期化（2モデル） 
 # 研究目的の簡潔なコメント: Granite と Llama の2系統LLMを個別初期化する.
 GRANITE_MODEL_ID = os.getenv("GRANITE_MODEL_ID", "ibm/granite-3-2-8b-instruct")
 LLAMA_MODEL_ID = os.getenv(
@@ -71,13 +71,14 @@ llama_llm = WatsonxLLM(
 # QueryFusionRetrieverのサブクエリ生成で使用するLLMを明示
 Settings.llm = granite_llm
 
-# --- Embedding/Index 構築 ---------------------------------------------------
+#  Embedding/Index 構築 
 # 研究目的の簡潔なコメント: 日本語向け埋め込みを採用しPDFをベクトル化する.
 Settings.embed_model = HuggingFaceEmbedding(
     model_name="pkshatech/GLuCoSE-base-ja"
 )
 
-PDF_PATH = os.getenv("RAG_PDF_PATH", "./docs/housetomato.pdf")
+# PDF_PATH = os.getenv("RAG_PDF_PATH", "./docs/housetomato.pdf")
+PDF_PATH = os.getenv("RAG_PDF_PATH", "./docs/example2.pdf")
 loader = PyMuPDFReader()
 documents = loader.load(file_path=PDF_PATH)
 
@@ -88,7 +89,7 @@ index = VectorStoreIndex.from_documents(
     embed_model=Settings.embed_model,
 )
 
-# --- Retriever 構築（ハイブリッド検索） ------------------------------------
+#  Retriever 構築（ハイブリッド検索） 
 # 研究目的の簡潔なコメント: ベクトルとBM25を融合したQueryFusionRetrieverを使用する.
 vector_retriever = index.as_retriever(similarity_top_k=2)
 bm25_retriever = BM25Retriever.from_defaults(
@@ -115,7 +116,7 @@ fusion_retriever = QueryFusionRetriever(
     llm=granite_llm,
 )
 
-# --- QueryEngine を2系統作成 ----------------------------------------------
+#  QueryEngine を2系統作成 -
 # 各エンジンは同一コーパスを検索するが，用いるLLMとサブクエリ生成器を分離する．
 from llama_index.core.response_synthesizers import get_response_synthesizer
 
@@ -160,7 +161,7 @@ llama_engine = RetrieverQueryEngine(
     response_synthesizer=llama_synth,
 )
 
-# --- 推論関数 ---------------------------------------------------------------
+#  推論関数 -
 # 研究目的の簡潔なコメント: 同一入力に対する2モデルの応答を返却する.
 
 def compare_models(prompt: str) -> Tuple[str, str]:
@@ -174,7 +175,7 @@ def compare_models(prompt: str) -> Tuple[str, str]:
         err = f"エラーが発生しました: {e}"
         return err, err
 
-# --- Gradio UI --------------------------------------------------------------
+#  Gradio UI 
 # 研究目的の簡潔なコメント: 単一入力で2出力を並列表示するUIを提供する.
 with gr.Blocks(title="Granite vs Llama — RAG出力比較") as demo:
     gr.Markdown("""
